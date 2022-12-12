@@ -1,0 +1,523 @@
+---
+title: "Time Series Forecasting"
+author: ""
+date: "2022-08-23"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo = TRUE,
+  cache = TRUE
+	)
+```
+
+
+
+# Setup
+
+Load required packages:
+
+```{r}
+library(forecast)
+library(ggplot2)
+```
+
+Load the data: 
+
+```{r load-data}
+#dat <- readxl::read_excel("C:/Users/Dell Pc/Desktop/New folder (3)/exam/Elec-train.xlsx")
+dat <- readxl::read_excel("../2022-08-22-upwork-forecast/Elec-train.xlsx")
+head(dat)
+```
+
+Observations are determined every 15 mins, giving a frequency of 4 observations per hour.
+
+
+```{r}
+consum <- ts(dat[1:4507,2], frequency = 4, start=c(1,2))
+head(consum)
+```
+
+Plot the data:
+
+```{r plot-data}
+autoplot(consum)+ 
+  ggtitle ('Electricity Consumption') +
+  xlab('Time (hours)') +
+  ylab('Consumption (kW)')
+```
+
+# Time-Series Modelling
+
+Data split-ted into training and test set. 80% for training and 20% for testing
+
+
+```{r test-train}
+consum.train <- window(consum, start=c(1,2), end=c(902,4))
+consum.test <- window(consum, start=c(903,1), end=c(1127,4))
+
+autoplot(consum.train,series="Train set") + 
+  autolayer(consum.test,series='Test set')+
+  ggtitle ('Electricity Consumption') +
+  xlab('Time (hours)') +
+  ylab('Consumption (kW)')
+```
+
+## Exponential Smoothing
+
+### Simple Exponential Smoothing (SES) 
+
+```{r alpha-select-1}
+#auto alpha selection, alpha = NULL
+consum_SES <- ses(consum.train,h=900, alpha=NULL)
+```
+
+### Non-seasonal Holt-Winters Model
+
+```{r alpha-select-2}
+#auto alpha and beta selection
+consum_NHW <- holt(consum.train,h=900,alpha=NULL,beta=NULL)
+```
+
+```{r alpha-select-plot}
+autoplot(consum.train,series="Training set") + 
+  autolayer(consum.test,series='Test set') +
+  autolayer(consum_SES$mean,series='SES') +
+  autolayer(consum_NHW$mean,series='Non-seasonal HW') +
+  ggtitle ('Electricity Consumption') +
+  xlab('Time (hours)') +
+  ylab('Consumption (kW)')
+```
+
+These models do not fit well.
+
+Lets try to consider the seasonal and linear trends.
+
+
+### Additive Seasonal Holt-Winters Model
+
+```{r hw}
+consum_HW_additive <- hw(consum.train, seasonal='additive',h=900)
+
+#Multiplicative seasonal Holt-Winters 
+consum_HW_multiplicative <- hw(consum.train, seasonal='multiplicative',h=900)
+
+#Damped additive seasonal Holt-Winters 
+consum_DHW_additive <- hw(consum.train, seasonal='additive',h=900,damped=TRUE)
+
+#Damped multiplicative seasonal Holt-Winters 
+consum_DHW_multiplicative <- hw(consum.train, seasonal='multiplicative',h=900,damped=TRUE)
+
+#Plot all 4 models
+autoplot(consum.train,series="Train set") + 
+  autolayer(consum.test,series='Test set')+
+  autolayer(consum_HW_additive$mean,series='Additive seasonal HW')+
+  autolayer(consum_HW_multiplicative$mean,series='Multiplicative seasonal HW')+
+  autolayer(consum_DHW_additive$mean,series='Damped additive seasonal HW')+
+  autolayer(consum_DHW_multiplicative$mean,series='Damped multiplicative seasonal HW')+
+  ggtitle ('Electricity Consumption') +
+  xlab('Time (hours)') +
+  ylab('Consumption (kW)')
+```
+
+These models are still not good. 
+
+Now We can try to stabilize the variance using a Box-Cox transformation with the additive Holt-Winters model.
+
+```{r hw2}
+# Additive seasonal Holt-Winters 
+consum_HW_additiveBC <- hw(consum.train, seasonal='additive',h=900, lambda = 'auto' )
+
+# Damped additive seasonal Holt-Winters 
+consum_DHW_additiveBC <- hw(consum.train, seasonal='additive',h=900,damped=TRUE, lambda = 'auto')
+
+# Plot both models on the same graph
+autoplot(consum.train,series="Train set") + 
+  autolayer(consum.test,series='Test set')+
+  autolayer(consum_HW_additiveBC$mean,series='Box-Cox with Additive Seasonal HW')+
+  autolayer(consum_DHW_additiveBC$mean,series='Box-Cox + Dampened Additive Seasonal HW')+
+  ggtitle ('Electricity Consumption') +
+  xlab('Time (hours)') +
+  ylab('Consumption (kW)')
+```
+
+This shows an improvement compared with the previous models.
+
+Now we compute the root mean square error (RMSE) of each model to assess model fit.
+
+```{r rms}
+print(sqrt(mean((consum_SES$mean - consum.test)^2)))
+print(sqrt(mean((consum_NHW$mean - consum.test)^2)))
+print(sqrt(mean((consum_HW_additive$mean - consum.test)^2)))
+print(sqrt(mean((consum_HW_multiplicative$mean - consum.test)^2)))
+print(sqrt(mean((consum_DHW_additive$mean - consum.test)^2)))
+print(sqrt(mean((consum_DHW_multiplicative$mean - consum.test)^2)))
+print(sqrt(mean((consum_HW_additiveBC$mean - consum.test)^2)))
+print(sqrt(mean((consum_DHW_additiveBC$mean - consum.test)^2)))
+```
+
+The model with the lowest error so far is dampened multiplicative Holt-Winters. However, this is not necessarily the best model because the prediction pattern does not correlate with the pattern of the test set. Instead, the mean error is low because the prediction is compressed in the center part of the chart.
+
+
+
+## ARIMA
+
+Now we fit an autoregressive integrated moving average model (ARIMA):
+
+
+```{r arima}
+#automaticaly SARIMA model.   
+
+consum_SARIMA <- auto.arima(consum.train)
+
+pred_consum_SARIMA <- forecast(consum_SARIMA,h=900)
+
+autoplot(consum.train,series="Training set") + 
+  autolayer(consum.test,series='Test set')+
+  autolayer(pred_consum_SARIMA,series='SARIMA',PI=FALSE)+
+  ggtitle ('Electricity Consumption') +
+  xlab('Time (hours)') +
+  ylab('Consumption (kW)')
+
+```
+
+This model is an improvement on previous attempts, but is still not ideal.
+
+Compute the root mean squared error (RMSE):
+
+```{r arima-rms}
+print(sqrt(mean((pred_consum_SARIMA$mean - consum.test)^2)))
+```
+
+Although the error is lower, the quality of the prediction does not seem to be good.
+
+
+
+## Neural Network Auto-Regression
+
+Neural Network Auto-Regression models take a machine learning approach and provide more flexibility compared with parametric statistical models.
+
+```{r nnar}
+#automatically choose the parameters p and k
+
+consum.train_NN = nnetar(consum.train)
+pred_consum.train_NN = forecast(consum.train_NN, h = 900)
+autoplot(consum.train,series="Train set") + 
+  autolayer(consum.test,series='Test set')+
+  autolayer(pred_consum.train_NN$mean,series='Neural Network')+
+  ggtitle ('Electricity Consumption') +
+  xlab('Time (hours)') +
+  ylab('Consumption (kW)')
+
+```
+
+Compute the root mean square error (RMSE)
+
+```{r nnar-rms}
+print(sqrt(mean((pred_consum.train_NN$mean - consum.test)^2)))
+```
+
+The error is higher than SARIMA model, but the prediction pattern seems more accurate.
+
+Now we look at the auto-correlation pattern:
+
+```{r nnar-acf}
+ggAcf(consum.train)
+```
+
+The auto-correlation declines slowly as the number of lags increases. 
+This is a property of non-stationarity and will effect the efficiency of several forecasting models.
+
+It is also possible that our data has a cyclic pattern and not a seasonal trend. In that case, they cannot be modelled using a standard linear model.
+
+Now we inspect the information from the Neural network model:
+
+```{r}
+print(consum.train_NN)
+```
+
+Try adding more neurons to the model in order to stabilize variance:
+
+```{r}
+consum.train_NN2 <- nnetar(consum.train,34,2,24,lambda='auto')
+pred_consum.train_NN2 <- forecast(consum.train_NN2, h = 900)
+
+autoplot(consum.train,series="Train set") + 
+  autolayer(consum.test,series='Test set')+
+  autolayer(pred_consum.train_NN2$mean,series='Neural Network')+
+  ggtitle ('Electricity Consumption') +
+  xlab('Time (hours)') +
+  ylab('Consumption (kW)')
+```
+
+Compute the RMSE:
+
+```{r}
+print(sqrt(mean((pred_consum.train_NN2$mean - consum.test)^2)))
+```
+
+
+This is the lowest error of all models so far. Try visualising the fit:
+
+```{r}
+autoplot(consum.test,series='Test set') + 
+  autolayer(pred_consum.train_NN2$mean,series='Neural Network')+
+  ggtitle ('Electricity Consumption') +
+  xlab('Time (hr)') +
+  ylab('Consumption (kW)')
+```
+
+We will now predict the electricity consumption of February 17, 2010 based on all previous data.
+
+The prediction interval is 24 hours for the entire day, giving h = (24*60)/15 = 96 observations.
+
+
+```{r}
+consum_17 <- nnetar(consum, 34,2,24,lambda='auto')
+pred_consum_17 <- forecast(consum_17, h = 96)
+autoplot(consum,series = "January 1, 2010 - February 16, 2010") + 
+  autolayer(pred_consum_17$mean,series='Prediction for February 17, 2010')+
+  ggtitle ('Electricity Consumption') +
+  xlab('Time (hours)') +
+  ylab('Consumption (kW)')
+```
+
+Prediction results:
+
+```{r}
+print(pred_consum_17)
+```
+
+Save prediction results to csv format:
+
+
+```{r}
+write.csv(pred_consum_17, file = "Prediction.csv")
+```
+
+
+# Modelling with Temparature as Additional Predictor
+
+We now use outdoor temperature to forecast the electricity consumption on February 17, 2010.
+
+First set up the time series model:
+
+```{r}
+temperature <- ts(dat[1:4507,3], frequency = 4, start=c(1,2))
+head(temperature)
+```
+
+Divide the data into training and test sets:
+
+```{r}
+temperature.train <- window(temperature, start=c(1,2), end=c(902,4))
+temperature.test <- window(temperature, start=c(903,1), end=c(1127,4))
+```
+
+
+## Time Series Linear Regression
+
+Estimate the effect of temperature on electricity consumption using a time series linear regression model (TSLR):
+
+```{r}
+effect_temp_on_consum.train <- tslm(consum.train~temperature.train)
+summary(effect_temp_on_consum.train)
+```
+
+The effect of temperature on electricity consumption is statistically significant.
+
+We can add trend and seasonal pattern to this regression:
+
+```{r}
+effect_temp_on_consum.train_TS <- tslm(consum.train~temperature.train+trend+season)
+summary(effect_temp_on_consum.train_TS)
+```
+
+There does not appear to be a seasonal pattern, so model using trend only:
+
+```{r}
+effect_temp_on_consum.train_T <- tslm(consum.train~temperature.train+trend)
+summary(effect_temp_on_consum.train_T)
+```
+
+
+Now compare the different models:
+
+```{r}
+CV(effect_temp_on_consum.train)
+CV(effect_temp_on_consum.train_TS)
+CV(effect_temp_on_consum.train_T)
+```
+
+We continue using the last model, which has the lowest AIC and the highest adjusted R-squared. 
+
+The TSLR model assumes that the residuals are independent and identically distributed. This needs to be checked:
+
+
+```{r}
+checkresiduals(effect_temp_on_consum.train_T, test="LB", plot=TRUE)
+```
+
+
+This suggests that the residuals are dependent, so we should not use the linear regression model.
+
+## Dynamic regression model
+
+We fit a dynamic regression model because the residuals are dependent and first auto-select the parameters:
+
+```{r}
+effect_temp_on_consum.train_T_ar <- auto.arima(consum.train,xreg=temperature.train)
+```
+
+Check the autocorrelation of the residuals:
+
+```{r}
+checkresiduals(effect_temp_on_consum.train_T_ar,test="LB",plot=TRUE)
+```
+
+
+Now validate the model and forecast the test set:
+
+```{r}
+predict.test_T <- forecast(effect_temp_on_consum.train_T_ar,xreg=temperature.test, h=900)
+```
+
+Calculate the root mean squared error (RMSE):
+
+```{r}
+print(sqrt(mean((predict.test_T$mean - consum.test)^2)))
+```
+
+Compare the prediction to that from the neural network model (without temperature):
+
+```{r}
+autoplot(consum.train,series="Train set") + 
+  autolayer(consum.test,series='Test set')+
+  autolayer(pred_consum.train_NN2$mean,series='Neural Network')+
+  autolayer(predict.test_T$mean,series='Dynamic Regression with Temperature')+
+  ggtitle ('Electricity Consumption') +
+  xlab('Time (hours)') +
+  ylab('Consumption (kW)')
+```
+
+Now try adding temperature as a predictor to the neural network model:
+
+```{r}
+consumption.train_NN_T <- nnetar(consum.train,34,2,24,lambda='auto',xreg=temperature.train)
+pred_consum.train_NN_T = forecast(consumption.train_NN_T, h = 900,xreg=temperature.test)
+autoplot(consum.train,series="Training set") + 
+  autolayer(consum.test,series='Test set')+
+  autolayer(pred_consum.train_NN_T$mean,series='Neural Network + Temperature')+
+  ggtitle ('Electricity Consumption') +
+  xlab('Time (hours)') +
+  ylab('Consumption (kW)')
+```
+
+
+Check the root mean squared error:
+
+```{r}
+print(sqrt(mean((pred_consum.train_NN_T$mean - consum.test)^2)))
+```
+
+Take a closer look at the prediction
+
+```{r}
+autoplot(consum.test,series='Test set') + 
+  autolayer(pred_consum.train_NN_T$mean,series='Neural Network + Temperature')+
+  ggtitle ('Electricity Consumption') +
+  xlab('Time (hours)') +
+  ylab('Consumption (kW)')
+```
+
+
+Now forecast electricity consumption on February 17, 2010 using this model:
+
+
+```{r}
+temperature_17 <- ts(dat[4509:4603,3], frequency = 4, start=c(1,2))
+head(temperature_17)
+```
+
+
+
+```{r}
+consumption_NN_T_17 <- nnetar(consum,34,2,24,lambda='auto',xreg=temperature)
+
+pred_consum_NN_T_17 <- forecast(consumption_NN_T_17, h = 96,xreg=temperature_17)
+
+autoplot(consum,series="January 1, 2010 - February 16, 2010") + 
+  autolayer(pred_consum_NN_T_17$mean,series='Neural Network Prediction using Temperature for February 17, 2010')+
+  ggtitle ('Electricity Consumption') +
+  xlab('Time (hours)') +
+  ylab('Consumption (kW)') +
+  theme(legend.position = "top")
+```
+
+
+Prediction results:
+
+```{r}
+print(pred_consum_NN_T_17)
+```
+
+## Vector Autoregressive Model (VAR)
+
+
+To fit a vector autoregressive model (VAR), we first need to load the `vars` package. A VAR model takes a multivariate approach, predicting power consumption and temperature using all (previous) values of these two time series. There is no distinction between power consumption as a dependent variable and temperature as an independent predictor.
+
+```{r}
+library(vars)
+
+# Create multivariate time series objects
+var.train <- cbind(consum.train, temperature.train)
+var.test <- cbind(consum.test, temperature.test)
+```
+
+Calculate the appropriate lag length for fitting the VAR model using various information criteria:
+
+```{r}
+VARselect(var.train, type = "const")$selection
+```
+
+We prefer the Schwarz Criterion (SC, which is another name for the Bayesian Information Criterion, BIC), as the AIC in particular can often choose too high a lag. We therefore start with a VAR(9) model:
+
+```{r}
+m_var <- VAR(var.train, p = 9, type = "const")
+serial.test(m_var, lags.pt=18, type="PT.asymptotic")
+```
+
+The Portmanteau test for serial autocorrelation suggests that the residuals of the model are still correlated. This indicates a suboptimal model that has not properly captured the pattern of the time series. Higher values of p do not change this result.
+
+
+We test for Granger causality, i.e. whether a change in temperature "causes" a subsequent change in power consumption:
+
+```{r}
+causality(m_var, cause = "temperature.train")$Granger
+```
+
+The null hypothesis is rejected (p < 0.05), indicating that Granger causality is accepted. This indicates that temperature is a predictor of power consumption.
+
+
+Now use the VAR model to predict values for the test set, and plot:
+
+```{r}
+var_predict <- predict(m_var, n.ahead = 900)
+fanchart(var_predict)
+```
+
+The chart shows that the prediction does not follow the pattern of power consumption well, instead returning a "flat" average.
+
+Finally, calculate the RMSE:
+
+```{r}
+print(sqrt(mean((var_predict$fcst$consum.train[, 1] - consum.test)^2)))
+```
+
+
+# Conclusion
+
+Of all models fitted, the neural network model with temperature as an additional predictor gives the best fit to the data.
+
+The main advantage of NNAR is the added flexibility to model non-linear trends such as that seen with our data.
